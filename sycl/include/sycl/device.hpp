@@ -21,8 +21,8 @@
 #include <memory>
 #include <utility>
 
-__SYCL_INLINE_NAMESPACE(cl) {
 namespace sycl {
+__SYCL_INLINE_VER_NAMESPACE(_V1) {
 // Forward declarations
 class device_selector;
 template <backend BackendName, class SyclObjectT>
@@ -46,7 +46,7 @@ class filter_selector;
 /// \ingroup sycl_api
 class __SYCL_EXPORT device {
 public:
-  /// Constructs a SYCL device instance as a host device.
+  /// Constructs a SYCL device instance using the default device.
   device();
 
   /// Constructs a SYCL device instance from an OpenCL cl_device_id
@@ -237,8 +237,8 @@ private:
       -> backend_return_t<BackendName, SyclObjectT>;
 };
 
+} // __SYCL_INLINE_VER_NAMESPACE(_V1)
 } // namespace sycl
-} // __SYCL_INLINE_NAMESPACE(cl)
 
 namespace std {
 template <> struct hash<sycl::device> {

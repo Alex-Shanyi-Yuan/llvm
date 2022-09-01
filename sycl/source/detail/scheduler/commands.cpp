@@ -48,8 +48,8 @@
 #include <detail/xpti_registry.hpp>
 #endif
 
-__SYCL_INLINE_NAMESPACE(cl) {
 namespace sycl {
+__SYCL_INLINE_VER_NAMESPACE(_V1) {
 namespace detail {
 
 #ifdef XPTI_ENABLE_INSTRUMENTATION
@@ -203,15 +203,32 @@ static std::string commandToName(Command::CommandType Type) {
 }
 #endif
 
-static std::vector<RT::PiEvent>
-getPiEvents(const std::vector<EventImplPtr> &EventImpls) {
+std::vector<RT::PiEvent>
+Command::getPiEvents(const std::vector<EventImplPtr> &EventImpls) const {
   std::vector<RT::PiEvent> RetPiEvents;
   for (auto &EventImpl : EventImpls) {
-    if (EventImpl->getHandleRef() != nullptr)
-      RetPiEvents.push_back(EventImpl->getHandleRef());
+    if (EventImpl->getHandleRef() == nullptr)
+      continue;
+
+    // Do not add redundant event dependencies for in-order queues.
+    // At this stage dependency is definitely pi task and need to check if
+    // current one is a host task. In this case we should not skip pi event due
+    // to different sync mechanisms for different task types on in-order queue.
+    const QueueImplPtr &WorkerQueue = getWorkerQueue();
+    if (EventImpl->getWorkerQueue() == WorkerQueue &&
+        WorkerQueue->isInOrder() && !isHostTask())
+      continue;
+
+    RetPiEvents.push_back(EventImpl->getHandleRef());
   }
 
   return RetPiEvents;
+}
+
+bool Command::isHostTask() const {
+  return (MType == CommandType::RUN_CG) /* host task has this type also */ &&
+         ((static_cast<const ExecCGCommand *>(this))->getCG().getType() ==
+          CG::CGTYPE::CodeplayHostTask);
 }
 
 static void flushCrossQueueDeps(const std::vector<EventImplPtr> &EventImpls,
@@ -240,7 +257,8 @@ class DispatchHostTask {
     // sophisticated waiting mechanism to allow to utilize this thread for any
     // other available job and resume once all required events are ready.
     for (auto &PluginWithEvents : RequiredEventsPerPlugin) {
-      std::vector<RT::PiEvent> RawEvents = getPiEvents(PluginWithEvents.second);
+      std::vector<RT::PiEvent> RawEvents =
+          MThisCmd->getPiEvents(PluginWithEvents.second);
       try {
         PluginWithEvents.first->call<PiApiKind::piEventsWait>(RawEvents.size(),
                                                               RawEvents.data());
@@ -393,10 +411,12 @@ void Command::waitForEvents(QueueImplPtr Queue,
 Command::Command(CommandType Type, QueueImplPtr Queue)
     : MQueue(std::move(Queue)),
       MEvent(std::make_shared<detail::event_impl>(MQueue)),
+      MWorkerQueue(MEvent->getWorkerQueue()),
       MPreparedDepsEvents(MEvent->getPreparedDepsEvents()),
       MPreparedHostDepsEvents(MEvent->getPreparedHostDepsEvents()),
       MType(Type) {
   MSubmittedQueue = MQueue;
+  MWorkerQueue = MQueue;
   MEvent->setCommand(this);
   MEvent->setContextImpl(MQueue->getContextImplPtr());
   MEvent->setStateIncomplete();
@@ -582,11 +602,12 @@ Command *Command::processDepEvent(EventImplPtr DepEvent, const DepDesc &Dep,
   const ContextImplPtr &WorkerContext = WorkerQueue->getContextImplPtr();
 
   // 1. Async work is not supported for host device.
-  // 2. Some types of commands do not produce PI events after they are enqueued
-  // (e.g. alloca). Note that we can't check the pi event to make that
-  // distinction since the command might still be unenqueued at this point.
-  bool PiEventExpected =
-      !DepEvent->is_host() || getType() == CommandType::HOST_TASK;
+  // 2. Non-host events can be ignored if they are not fully initialized.
+  // 3. Some types of commands do not produce PI events after they are enqueued
+  //    (e.g. alloca). Note that we can't check the pi event to make that
+  //    distinction since the command might still be unenqueued at this point.
+  bool PiEventExpected = (!DepEvent->is_host() && DepEvent->isInitialized()) ||
+                         getType() == CommandType::HOST_TASK;
   if (auto *DepCmd = static_cast<Command *>(DepEvent->getCommand()))
     PiEventExpected &= DepCmd->producesPiEvent();
 
@@ -598,12 +619,6 @@ Command *Command::processDepEvent(EventImplPtr DepEvent, const DepDesc &Dep,
   }
 
   Command *ConnectionCmd = nullptr;
-
-  // Do not add redundant event dependencies for in-order queues.
-  if (Dep.MDepCommand && Dep.MDepCommand->getWorkerQueue() == WorkerQueue &&
-      WorkerQueue->has_property<property::queue::in_order>() &&
-      getType() != CommandType::HOST_TASK)
-    return nullptr;
 
   ContextImplPtr DepEventContext = DepEvent->getContextImpl();
   // If contexts don't match we'll connect them using host task
@@ -620,14 +635,14 @@ const ContextImplPtr &Command::getWorkerContext() const {
   return MQueue->getContextImplPtr();
 }
 
-const QueueImplPtr &Command::getWorkerQueue() const { return MQueue; }
+const QueueImplPtr &Command::getWorkerQueue() const {
+  assert(MWorkerQueue && "MWorkerQueue must not be nullptr");
+  return MWorkerQueue;
+}
 
 bool Command::producesPiEvent() const { return true; }
 
-bool Command::supportsPostEnqueueCleanup() const {
-  // Isolated commands are cleaned up separately
-  return !MUsers.empty() || !MDeps.empty();
-}
+bool Command::supportsPostEnqueueCleanup() const { return true; }
 
 Command *Command::addDep(DepDesc NewDep, std::vector<Command *> &ToCleanUp) {
   Command *ConnectionCmd = nullptr;
@@ -833,10 +848,11 @@ const char *Command::getBlockReason() const {
 
 AllocaCommandBase::AllocaCommandBase(CommandType Type, QueueImplPtr Queue,
                                      Requirement Req,
-                                     AllocaCommandBase *LinkedAllocaCmd)
+                                     AllocaCommandBase *LinkedAllocaCmd,
+                                     bool IsConst)
     : Command(Type, Queue), MLinkedAllocaCmd(LinkedAllocaCmd),
-      MIsLeaderAlloca(nullptr == LinkedAllocaCmd), MRequirement(std::move(Req)),
-      MReleaseCmd(Queue, this) {
+      MIsLeaderAlloca(nullptr == LinkedAllocaCmd), MIsConst(IsConst),
+      MRequirement(std::move(Req)), MReleaseCmd(Queue, this) {
   MRequirement.MAccessMode = access::mode::read_write;
   emitInstrumentationDataProxy();
 }
@@ -868,9 +884,9 @@ bool AllocaCommandBase::supportsPostEnqueueCleanup() const { return false; }
 
 AllocaCommand::AllocaCommand(QueueImplPtr Queue, Requirement Req,
                              bool InitFromUserData,
-                             AllocaCommandBase *LinkedAllocaCmd)
+                             AllocaCommandBase *LinkedAllocaCmd, bool IsConst)
     : AllocaCommandBase(CommandType::ALLOCA, std::move(Queue), std::move(Req),
-                        LinkedAllocaCmd),
+                        LinkedAllocaCmd, IsConst),
       MInitFromUserData(InitFromUserData) {
   // Node event must be created before the dependent edge is added to this node,
   // so this call must be before the addDep() call.
@@ -931,7 +947,6 @@ void AllocaCommand::printDot(std::ostream &Stream) const {
   Stream << " Link : " << this->MLinkedAllocaCmd << "\\n";
   Stream << "\"];" << std::endl;
 
-
   for (const auto &Dep : MDeps) {
     if (Dep.MDepCommand == nullptr)
       continue;
@@ -949,7 +964,7 @@ AllocaSubBufCommand::AllocaSubBufCommand(QueueImplPtr Queue, Requirement Req,
                                          std::vector<Command *> &ToCleanUp)
     : AllocaCommandBase(CommandType::ALLOCA_SUB_BUF, std::move(Queue),
                         std::move(Req),
-                        /*LinkedAllocaCmd*/ nullptr),
+                        /*LinkedAllocaCmd*/ nullptr, /*IsConst*/ false),
       MParentAlloca(ParentAlloca) {
   // Node event must be created before the dependent edge
   // is added to this node, so this call must be before
@@ -1076,7 +1091,6 @@ pi_int32 ReleaseCommand::enqueueImp() {
     // 2. Host allocation should be released if host allocation is "leader".
     // 3. Device alloca in the pair should be in active state in order to be
     //    correctly released.
-
 
     // There is no actual memory allocation if a host alloca command is created
     // being linked to a device allocation.
@@ -1298,6 +1312,9 @@ MemCpyCommand::MemCpyCommand(Requirement SrcReq,
   if (!MSrcQueue->is_host()) {
     MEvent->setContextImpl(MSrcQueue->getContextImplPtr());
   }
+
+  MWorkerQueue = MQueue->is_host() ? MSrcQueue : MQueue;
+
   emitInstrumentationDataProxy();
 }
 
@@ -1333,10 +1350,6 @@ void MemCpyCommand::emitInstrumentationData() {
 
 const ContextImplPtr &MemCpyCommand::getWorkerContext() const {
   return getWorkerQueue()->getContextImplPtr();
-}
-
-const QueueImplPtr &MemCpyCommand::getWorkerQueue() const {
-  return MQueue->is_host() ? MSrcQueue : MQueue;
 }
 
 bool MemCpyCommand::producesPiEvent() const {
@@ -1481,6 +1494,8 @@ MemCpyCommandHost::MemCpyCommandHost(Requirement SrcReq,
     MEvent->setContextImpl(MSrcQueue->getContextImplPtr());
   }
 
+  MWorkerQueue = MQueue->is_host() ? MSrcQueue : MQueue;
+
   emitInstrumentationDataProxy();
 }
 
@@ -1516,10 +1531,6 @@ void MemCpyCommandHost::emitInstrumentationData() {
 
 const ContextImplPtr &MemCpyCommandHost::getWorkerContext() const {
   return getWorkerQueue()->getContextImplPtr();
-}
-
-const QueueImplPtr &MemCpyCommandHost::getWorkerQueue() const {
-  return MQueue->is_host() ? MSrcQueue : MQueue;
 }
 
 pi_int32 MemCpyCommandHost::enqueueImp() {
@@ -2580,5 +2591,5 @@ bool ExecCGCommand::supportsPostEnqueueCleanup() const {
 }
 
 } // namespace detail
+} // __SYCL_INLINE_VER_NAMESPACE(_V1)
 } // namespace sycl
-} // __SYCL_INLINE_NAMESPACE(cl)

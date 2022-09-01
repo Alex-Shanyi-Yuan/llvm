@@ -24,8 +24,8 @@
 #include <chrono>
 #include <thread>
 
-__SYCL_INLINE_NAMESPACE(cl) {
 namespace sycl {
+__SYCL_INLINE_VER_NAMESPACE(_V1) {
 namespace detail {
 
 inline std::vector<info::fp_config> read_fp_bitfield(pi_device_fp_config bits) {
@@ -75,6 +75,32 @@ read_execution_bitfield(pi_device_exec_capabilities bits) {
   if (bits & PI_EXEC_NATIVE_KERNEL)
     result.push_back(info::execution_capability::exec_native_kernel);
   return result;
+}
+
+inline std::string
+affinityDomainToString(info::partition_affinity_domain AffinityDomain) {
+  switch (AffinityDomain) {
+#define __SYCL_AFFINITY_DOMAIN_STRING_CASE(DOMAIN)                             \
+  case DOMAIN:                                                                 \
+    return #DOMAIN;
+
+    __SYCL_AFFINITY_DOMAIN_STRING_CASE(
+        sycl::info::partition_affinity_domain::numa)
+    __SYCL_AFFINITY_DOMAIN_STRING_CASE(
+        sycl::info::partition_affinity_domain::L4_cache)
+    __SYCL_AFFINITY_DOMAIN_STRING_CASE(
+        sycl::info::partition_affinity_domain::L3_cache)
+    __SYCL_AFFINITY_DOMAIN_STRING_CASE(
+        sycl::info::partition_affinity_domain::L2_cache)
+    __SYCL_AFFINITY_DOMAIN_STRING_CASE(
+        sycl::info::partition_affinity_domain::L1_cache)
+    __SYCL_AFFINITY_DOMAIN_STRING_CASE(
+        sycl::info::partition_affinity_domain::next_partitionable)
+#undef __SYCL_AFFINITY_DOMAIN_STRING_CASE
+  default:
+    assert(false && "Missing case for affinity domain.");
+    return "unknown";
+  }
 }
 
 // Mapping expected SYCL return types to those returned by PI calls
@@ -1135,7 +1161,7 @@ get_device_info_host<info::device::built_in_kernels>() {
 }
 
 template <> inline platform get_device_info_host<info::device::platform>() {
-  return platform();
+  return createSyclObjFromImpl<platform>(platform_impl::getHostPlatformImpl());
 }
 
 template <> inline std::string get_device_info_host<info::device::name>() {
@@ -1361,6 +1387,14 @@ get_device_info_host<info::device::ext_intel_device_info_uuid>() {
       PI_ERROR_INVALID_DEVICE);
 }
 
+template <>
+inline uint64_t
+get_device_info_host<info::device::ext_intel_free_memory>() {
+  throw runtime_error(
+      "Obtaining the device free memory is not supported on HOST device",
+      PI_ERROR_INVALID_DEVICE);
+}
+
 } // namespace detail
+} // __SYCL_INLINE_VER_NAMESPACE(_V1)
 } // namespace sycl
-} // __SYCL_INLINE_NAMESPACE(cl)

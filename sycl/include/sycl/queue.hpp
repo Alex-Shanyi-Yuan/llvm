@@ -51,8 +51,8 @@
 #define __SYCL_USE_FALLBACK_ASSERT 0
 #endif
 
-__SYCL_INLINE_NAMESPACE(cl) {
 namespace sycl {
+__SYCL_INLINE_VER_NAMESPACE(_V1) {
 
 // Forward declaration
 class context;
@@ -462,7 +462,7 @@ public:
 
   /// \return true if the queue was constructed with property specified by
   /// PropertyT.
-  template <typename PropertyT> bool has_property() const;
+  template <typename PropertyT> bool has_property() const noexcept;
 
   /// \return a copy of the property of type PropertyT that the queue was
   /// constructed with. If the queue was not constructed with the PropertyT
@@ -1003,8 +1003,7 @@ public:
   /// const KernelType &KernelFunc".
   template <typename KernelName = detail::auto_name, int Dims,
             typename... RestT>
-  std::enable_if_t<
-      ext::oneapi::detail::AreAllButLastReductions<RestT...>::value, event>
+  std::enable_if_t<detail::AreAllButLastReductions<RestT...>::value, event>
   parallel_for(nd_range<Dims> Range, RestT &&...Rest) {
     // Actual code location needs to be captured from KernelInfo object.
     const detail::code_location CodeLoc = {};
@@ -1134,8 +1133,7 @@ private:
   /// \param Range specifies the global work space of the kernel
   /// \param KernelFunc is the Kernel functor or lambda
   template <typename KernelName, int Dims, typename... RestT>
-  std::enable_if_t<
-      ext::oneapi::detail::AreAllButLastReductions<RestT...>::value, event>
+  std::enable_if_t<detail::AreAllButLastReductions<RestT...>::value, event>
   parallel_for_impl(range<Dims> Range, RestT &&...Rest) {
     // Actual code location needs to be captured from KernelInfo object.
     const detail::code_location CodeLoc = {};
@@ -1273,8 +1271,8 @@ event submitAssertCapture(queue &Self, event &Event, queue *SecondaryQueue,
 #endif // __SYCL_USE_FALLBACK_ASSERT
 } // namespace detail
 
+} // __SYCL_INLINE_VER_NAMESPACE(_V1)
 } // namespace sycl
-} // __SYCL_INLINE_NAMESPACE(cl)
 
 namespace std {
 template <> struct hash<sycl::queue> {

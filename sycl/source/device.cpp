@@ -16,8 +16,8 @@
 #include <sycl/device_selector.hpp>
 #include <sycl/info/info_desc.hpp>
 
-__SYCL_INLINE_NAMESPACE(cl) {
 namespace sycl {
+__SYCL_INLINE_VER_NAMESPACE(_V1) {
 namespace detail {
   void force_type(info::device_type &t, const info::device_type &ft) {
     if (t == info::device_type::all) {
@@ -29,7 +29,7 @@ namespace detail {
   }
 } // namespace detail
 
-device::device() : impl(detail::device_impl::getHostDeviceImpl()) {}
+device::device() : device(default_selector_v) {}
 
 device::device(cl_device_id DeviceId) {
   // The implementation constructor takes ownership of the native handle so we
@@ -161,5 +161,5 @@ pi_native_handle device::getNative() const { return impl->getNative(); }
 
 bool device::has(aspect Aspect) const { return impl->has(Aspect); }
 
+} // __SYCL_INLINE_VER_NAMESPACE(_V1)
 } // namespace sycl
-} // __SYCL_INLINE_NAMESPACE(cl)

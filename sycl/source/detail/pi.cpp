@@ -42,8 +42,8 @@
 #define SYCL_VERSION_STR                                                       \
   "sycl " STR(__LIBSYCL_MAJOR_VERSION) "." STR(__LIBSYCL_MINOR_VERSION)
 
-__SYCL_INLINE_NAMESPACE(cl) {
 namespace sycl {
+__SYCL_INLINE_VER_NAMESPACE(_V1) {
 namespace detail {
 #ifdef XPTI_ENABLE_INSTRUMENTATION
 // Global (to the SYCL runtime) graph handle that all command groups are a
@@ -347,8 +347,9 @@ int unloadPlugin(void *Library) { return unloadOsLibrary(Library); }
 bool bindPlugin(void *Library,
                 const std::shared_ptr<PiPlugin> &PluginInformation) {
 
-  decltype(::piPluginInit) *PluginInitializeFunction = (decltype(
-      &::piPluginInit))(getOsLibraryFuncAddress(Library, "piPluginInit"));
+  decltype(::piPluginInit) *PluginInitializeFunction =
+      (decltype(&::piPluginInit))(getOsLibraryFuncAddress(Library,
+                                                          "piPluginInit"));
   if (PluginInitializeFunction == nullptr)
     return false;
 
@@ -386,12 +387,15 @@ static void initializePlugins(std::vector<plugin> &Plugins) {
     std::cerr << "SYCL_PI_TRACE[all]: "
               << "No Plugins Found." << std::endl;
 
+  const std::string LibSYCLDir =
+      sycl::detail::OSUtil::getCurrentDSODir() + sycl::detail::OSUtil::DirSep;
+
   for (unsigned int I = 0; I < PluginNames.size(); I++) {
     std::shared_ptr<PiPlugin> PluginInformation = std::make_shared<PiPlugin>(
         PiPlugin{_PI_H_VERSION_STRING, _PI_H_VERSION_STRING,
                  /*Targets=*/nullptr, /*FunctionPointers=*/{}});
 
-    void *Library = loadPlugin(PluginNames[I].first);
+    void *Library = loadPlugin(LibSYCLDir + PluginNames[I].first);
 
     if (!Library) {
       if (trace(PI_TRACE_ALL)) {
@@ -840,5 +844,5 @@ void DeviceBinaryImage::init(pi_device_binary Bin) {
 
 } // namespace pi
 } // namespace detail
+} // __SYCL_INLINE_VER_NAMESPACE(_V1)
 } // namespace sycl
-} // __SYCL_INLINE_NAMESPACE(cl)
